@@ -9,9 +9,13 @@ import SwiftUI
 
 @main
 struct GalleryCleanerApp: App {
+
+    @State private var store = LibraryStore()
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
+                .environment(store)
         }
     }
 }
