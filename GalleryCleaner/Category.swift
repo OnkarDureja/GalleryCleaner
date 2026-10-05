@@ -100,15 +100,18 @@ enum CategoryID: String, CaseIterable, Identifiable, Sendable {
 /// thing to go wrong on a device you cannot debug.
 enum CategoryState: Equatable {
     case idle
-    case scanning(partialCount: Int)
+    /// `partialCount` is nil for work that has no meaningful running total.
+    /// Duplicate detection is one: a half-finished comparison has found no
+    /// groups yet, and printing "0" while it works reads as a finished answer.
+    case scanning(partialCount: Int?, detail: String)
     case ready(count: Int, note: String?)
     case unavailable(reason: String)
 
     var count: Int? {
         switch self {
-        case .scanning(let partial): return partial
-        case .ready(let count, _):   return count
-        case .idle, .unavailable:    return nil
+        case .scanning(let partial, _): return partial
+        case .ready(let count, _):      return count
+        case .idle, .unavailable:       return nil
         }
     }
 

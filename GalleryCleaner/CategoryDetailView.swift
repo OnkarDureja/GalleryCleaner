@@ -30,6 +30,10 @@ struct CategoryDetailView: View {
 
     @State private var allowNetworkPreviews = false
 
+    /// Set when a thumbnail is tapped. Thumbnails were never wired to anything
+    /// before this, which is why tapping one did nothing at all.
+    @State private var viewerTarget: ViewerTarget?
+
     var body: some View {
         Group {
             switch store.state(for: category) {
@@ -41,12 +45,20 @@ struct CategoryDetailView: View {
                     message: reason
                 )
 
-            case .idle, .scanning:
+            case .idle:
                 NoticeView(
                     symbolName: "hourglass",
                     tint: .secondary,
-                    headline: "Still scanning",
-                    message: "Come back when the scan finishes, or watch the count on the previous screen."
+                    headline: "Nothing scanned yet",
+                    message: "Start a scan from the previous screen."
+                )
+
+            case .scanning(_, let detail):
+                NoticeView(
+                    symbolName: "hourglass",
+                    tint: .secondary,
+                    headline: detail,
+                    message: "Come back when this finishes, or watch the card on the previous screen."
                 )
 
             case .ready(let count, let note):
@@ -67,26 +79,114 @@ struct CategoryDetailView: View {
         .navigationTitle(category.title)
         .navigationBarTitleDisplayMode(.inline)
         .task { resolveAssets() }
+        .fullScreenCover(item: $viewerTarget) { target in
+            AssetViewerView(record: target.record, asset: assetsByID[target.record.id])
+        }
     }
 
     private var emptyHeadline: String {
         switch category {
-        case .screenshots: return "No screenshots"
-        case .videos:      return "No videos"
-        case .largeVideos: return "No large videos"
-        default:           return "Nothing here"
+        case .screenshots:     return "No screenshots"
+        case .videos:          return "No videos"
+        case .largeVideos:     return "No large videos"
+        case .duplicatePhotos: return "No duplicate photos"
+        case .duplicateVideos: return "No duplicate videos"
+        case .similarPhotos:   return "Nothing here"
         }
     }
 
-    // MARK: - Layout
+    // MARK: - Content
+
+    @ViewBuilder
+    private func content(note: String?) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+
+                header(note: note)
+
+                switch category.detection {
+                case .grouping:  groupList
+                case .streaming: flatList
+                }
+
+                if let footnote = methodFootnote {
+                    Text(footnote)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .padding(.top, 4)
+                        .padding(.horizontal, 4)
+                }
+            }
+            .padding(12)
+        }
+    }
+
+    @ViewBuilder
+    private func header(note: String?) -> some View {
+        SummaryRow(category: category, records: store.records(for: category), groups: store.groups(for: category))
+
+        // Grouping categories skip the note: the summary row above already
+        // carries the set count and the reclaimable total, and repeating it in
+        // a card directly underneath was the same sentence twice.
+        if let note, category.detection == .streaming {
+            InfoCard(text: note)
+        }
+
+        if !cloudPending.isEmpty && !allowNetworkPreviews {
+            PreviewRecoveryCard(count: cloudPending.count) {
+                cloudPending.removeAll()
+                renderFailures.removeAll()
+                allowNetworkPreviews = true
+            }
+        }
+
+        if !renderFailures.isEmpty {
+            InfoCard(text: "\(renderFailures.count) preview\(renderFailures.count == 1 ? "" : "s") couldn't be rendered. The sizes and durations here come from the scan and are unaffected.")
+        }
+    }
+
+    /// How the matching was done, kept small and at the bottom. It matters for
+    /// trust but it is not what the user came to read.
+    private var methodFootnote: String? {
+        switch category {
+        case .duplicatePhotos:
+            return "Matched on dimensions, exact file size and the first \(AppConfig.duplicateFingerprintBytes / 1024) KB of file data. Sets marked as an identical image saved as a different file were found by comparing pixels instead, so they only cover photos saved around the same time."
+        case .duplicateVideos:
+            return "Matched on dimensions, duration, exact file size and the first \(AppConfig.duplicateFingerprintBytes / 1024) KB of file data."
+        case .similarPhotos:
+            return "Compared only against photos taken within \(Int(AppConfig.Similarity.timeWindowSeconds)) seconds of each other, or in the same burst."
+        default:
+            return nil
+        }
+    }
+
+    // MARK: - Grouped layout
+
+    @ViewBuilder
+    private var groupList: some View {
+        LazyVStack(spacing: 12) {
+            ForEach(store.groups(for: category)) { group in
+                GroupCard(
+                    category: category,
+                    group: group,
+                    assetsByID: assetsByID,
+                    allowNetwork: allowNetworkPreviews,
+                    onOutcome: handleOutcome,
+                    onOpen: open
+                )
+            }
+        }
+    }
+
+    // MARK: - Flat layout
 
     /// Column count follows the item count. A fixed three-column grid is right
     /// for hundreds of items and wrong for one: it leaves a single small square
     /// in the corner of an otherwise blank screen.
     private enum Layout {
-        case solo       // one item, shown large at its real shape
-        case pairs      // a handful, two columns
-        case dense      // many, three columns
+        case solo
+        case pairs
+        case dense
     }
 
     private func layout(for count: Int) -> Layout {
@@ -96,64 +196,54 @@ struct CategoryDetailView: View {
     }
 
     @ViewBuilder
-    private func content(note: String?) -> some View {
+    private var flatList: some View {
         let records = store.records(for: category)
-        let layout = layout(for: records.count)
 
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
+        switch layout(for: records.count) {
+        case .solo:
+            if let record = records.first {
+                SoloItemView(
+                    record: record,
+                    asset: assetsByID[record.id],
+                    allowNetwork: allowNetworkPreviews,
+                    onOutcome: handleOutcome,
+                    onOpen: open
+                )
+            }
 
-                SummaryRow(records: records, category: category)
-
-                if let note {
-                    InfoCard(text: note)
-                }
-
-                if !cloudPending.isEmpty && !allowNetworkPreviews {
-                    PreviewRecoveryCard(count: cloudPending.count) {
-                        cloudPending.removeAll()
-                        renderFailures.removeAll()
-                        allowNetworkPreviews = true
-                    }
-                }
-
-                if !renderFailures.isEmpty {
-                    InfoCard(text: "\(renderFailures.count) preview\(renderFailures.count == 1 ? "" : "s") couldn't be rendered. The sizes and durations below come from the scan and are unaffected.")
-                }
-
-                switch layout {
-                case .solo:
-                    if let record = records.first {
-                        SoloItemView(
-                            record: record,
-                            asset: assetsByID[record.id],
-                            category: category,
-                            allowNetwork: allowNetworkPreviews,
-                            onOutcome: handleOutcome
-                        )
-                    }
-
-                case .pairs, .dense:
-                    LazyVGrid(columns: gridColumns(layout), spacing: AppConfig.gridSpacing) {
-                        ForEach(records) { record in
-                            AssetCell(
-                                record: record,
-                                asset: assetsByID[record.id],
-                                category: category,
-                                allowNetwork: allowNetworkPreviews,
-                                onOutcome: handleOutcome
-                            )
-                        }
-                    }
+        case .pairs, .dense:
+            LazyVGrid(columns: gridColumns(records.count), spacing: 10) {
+                ForEach(records) { record in
+                    AssetCell(
+                        record: record,
+                        asset: assetsByID[record.id],
+                        caption: caption(for: record),
+                        allowNetwork: allowNetworkPreviews,
+                        onOutcome: handleOutcome,
+                        onOpen: open
+                    )
                 }
             }
-            .padding(12)
         }
     }
 
-    private func gridColumns(_ layout: Layout) -> [GridItem] {
-        let count = (layout == .pairs) ? 2 : AppConfig.gridColumns
-        return Array(repeating: GridItem(.flexible(), spacing: AppConfig.gridSpacing), count: count)
+    private func gridColumns(_ count: Int) -> [GridItem] {
+        let columns = count <= 6 ? 2 : AppConfig.gridColumns
+        return Array(repeating: GridItem(.flexible(), spacing: AppConfig.gridSpacing), count: columns)
+    }
+
+    private func caption(for record: AssetRecord) -> String? {
+        switch category {
+        case .largeVideos: return Formatters.size(record.size)
+        case .videos:      return Formatters.duration(record.duration)
+        default:           return nil
+        }
+    }
+
+    // MARK: - Outcomes and resolution
+
+    private func open(_ record: AssetRecord) {
+        viewerTarget = ViewerTarget(record: record)
     }
 
     private func handleOutcome(_ id: String, _ outcome: ThumbnailOutcome) {
@@ -169,20 +259,22 @@ struct CategoryDetailView: View {
         }
     }
 
-    // MARK: - Asset resolution
+    private var displayedIDs: [String] {
+        switch category.detection {
+        case .streaming: return store.records(for: category).map(\.id)
+        case .grouping:  return store.groups(for: category).flatMap { $0.members.map(\.id) }
+        }
+    }
 
     @MainActor
     private func resolveAssets() {
         guard !didResolve else { return }
 
-        let ids = store.records(for: category).map(\.id)
-        guard !ids.isEmpty else {
-            didResolve = true
-            return
-        }
+        let ids = displayedIDs
+        guard !ids.isEmpty else { return }   // grouping may still be running
 
         // One database query. The result is unordered, so it goes into a
-        // dictionary and the grid keeps the index's own order.
+        // dictionary and the views keep the index's own order.
         let result = PHAsset.fetchAssets(withLocalIdentifiers: ids, options: nil)
         var map: [String: PHAsset] = [:]
         map.reserveCapacity(result.count)
@@ -197,6 +289,111 @@ struct CategoryDetailView: View {
     }
 }
 
+// MARK: - Group card
+
+private struct GroupCard: View {
+
+    let category: CategoryID
+    let group: AssetGroup
+    let assetsByID: [String: PHAsset]
+    let allowNetwork: Bool
+    let onOutcome: (String, ThumbnailOutcome) -> Void
+    let onOpen: (AssetRecord) -> Void
+
+    private let columns = [GridItem(.adaptive(minimum: 84), spacing: 4)]
+
+    private var memberNoun: String {
+        category == .similarPhotos ? "similar shots" : "copies"
+    }
+
+    private var groupCaption: String? {
+        var parts: [String] = []
+        if let created = group.representative.creationDate {
+            parts.append("Earliest \(created.formatted(date: .abbreviated, time: .omitted))")
+        }
+        if let note = group.note {
+            parts.append(note)
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+
+            HStack(spacing: 6) {
+                Text("\(group.members.count) \(memberNoun)")
+                    .font(.subheadline.weight(.semibold))
+
+                Text("·").foregroundStyle(.tertiary)
+
+                Text(Formatters.dimensions(
+                    width: group.representative.pixelWidth,
+                    height: group.representative.pixelHeight
+                ))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+                Spacer(minLength: 8)
+
+                if let bytes = group.reclaimableBytes {
+                    Text("\(Formatters.bytes(bytes)) to free")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+            }
+
+            LazyVGrid(columns: columns, spacing: 4) {
+                ForEach(group.members) { member in
+                    Button {
+                        onOpen(member)
+                    } label: {
+                        ThumbnailView(
+                            record: member,
+                            asset: assetsByID[member.id],
+                            allowNetwork: allowNetwork,
+                            aspect: .square,
+                            onOutcome: onOutcome
+                        )
+                        .overlay(alignment: .center) {
+                            if member.kind == .video {
+                                Image(systemName: "play.circle.fill")
+                                    .font(.system(size: 22))
+                                    .foregroundStyle(.white.opacity(0.9))
+                                    .shadow(color: .black.opacity(0.35), radius: 3)
+                            }
+                        }
+                        .overlay(alignment: .topLeading) {
+                            if member.id == group.representative.id {
+                                Text(group.representativeLabel)
+                                    .font(.caption2.weight(.bold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 3)
+                                    .background(Color.accentColor, in: Capsule())
+                                    .padding(5)
+                            }
+                        }
+                    }
+                    .buttonStyle(ThumbnailButtonStyle())
+                }
+            }
+
+            if let caption = groupCaption {
+                Text(caption)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(12)
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16)
+                .strokeBorder(Color(.separator).opacity(0.5), lineWidth: 0.5)
+        }
+    }
+}
+
 // MARK: - Single item
 
 /// One item gets a real preview plus everything the index already knows about
@@ -206,9 +403,9 @@ private struct SoloItemView: View {
 
     let record: AssetRecord
     let asset: PHAsset?
-    let category: CategoryID
     let allowNetwork: Bool
     let onOutcome: (String, ThumbnailOutcome) -> Void
+    let onOpen: (AssetRecord) -> Void
 
     private var ratio: CGFloat {
         guard record.pixelWidth > 0, record.pixelHeight > 0 else { return 1 }
@@ -217,15 +414,28 @@ private struct SoloItemView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            ThumbnailView(
-                record: record,
-                asset: asset,
-                allowNetwork: allowNetwork,
-                aspect: .natural(ratio),
-                onOutcome: onOutcome
-            )
-            .frame(maxHeight: 400)
-            .frame(maxWidth: .infinity)
+            Button {
+                onOpen(record)
+            } label: {
+                ThumbnailView(
+                    record: record,
+                    asset: asset,
+                    allowNetwork: allowNetwork,
+                    aspect: .natural(ratio),
+                    onOutcome: onOutcome
+                )
+                .frame(maxHeight: 400)
+                .frame(maxWidth: .infinity)
+                .overlay(alignment: .center) {
+                    if record.kind == .video {
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 46))
+                            .foregroundStyle(.white.opacity(0.92))
+                            .shadow(color: .black.opacity(0.35), radius: 4)
+                    }
+                }
+            }
+            .buttonStyle(ThumbnailButtonStyle())
 
             DetailFacts(record: record)
         }
@@ -292,38 +502,58 @@ private struct AssetCell: View {
 
     let record: AssetRecord
     let asset: PHAsset?
-    let category: CategoryID
+    let caption: String?
     let allowNetwork: Bool
     let onOutcome: (String, ThumbnailOutcome) -> Void
+    let onOpen: (AssetRecord) -> Void
 
     var body: some View {
-        ThumbnailView(
-            record: record,
-            asset: asset,
-            allowNetwork: allowNetwork,
-            aspect: .square,
-            onOutcome: onOutcome
-        )
-        .overlay(alignment: .bottomLeading) {
+        // The caption sits under the thumbnail, not on it. As an overlay it
+        // covered the middle of the frame, which on screen recordings and
+        // other text-heavy videos hid the very thing the thumbnail is for.
+        VStack(spacing: 5) {
+            Button {
+                onOpen(record)
+            } label: {
+                ThumbnailView(
+                    record: record,
+                    asset: asset,
+                    allowNetwork: allowNetwork,
+                    aspect: .square,
+                    onOutcome: onOutcome
+                )
+                .overlay(alignment: .center) {
+                    if record.kind == .video {
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 26))
+                            .foregroundStyle(.white.opacity(0.9))
+                            .shadow(color: .black.opacity(0.35), radius: 3)
+                    }
+                }
+            }
+            .buttonStyle(ThumbnailButtonStyle())
+
             if let caption {
                 Text(caption)
-                    .font(.caption2.weight(.semibold))
+                    .font(.caption2.weight(.medium))
                     .monospacedDigit()
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(.black.opacity(0.55), in: Capsule())
-                    .padding(5)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+                    .frame(maxWidth: .infinity)
             }
         }
     }
+}
 
-    private var caption: String? {
-        switch category {
-        case .largeVideos: return Formatters.size(record.size)
-        case .videos:      return Formatters.duration(record.duration)
-        default:           return nil
-        }
+/// Press feedback on a thumbnail. Without it a tap gives no sign it landed,
+/// which is most of what "nothing happens" felt like.
+private struct ThumbnailButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.95 : 1)
+            .opacity(configuration.isPressed ? 0.82 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 
@@ -331,17 +561,18 @@ private struct AssetCell: View {
 
 private struct SummaryRow: View {
 
-    let records: [AssetRecord]
     let category: CategoryID
+    let records: [AssetRecord]
+    let groups: [AssetGroup]
 
     var body: some View {
         HStack(spacing: 6) {
-            Text("\(records.count) item\(records.count == 1 ? "" : "s")")
+            Text(leading)
                 .font(.subheadline.weight(.medium))
 
-            if let total = totalBytes {
+            if let trailing {
                 Text("·").foregroundStyle(.tertiary)
-                Text(Formatters.bytes(total))
+                Text(trailing)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
@@ -351,12 +582,28 @@ private struct SummaryRow: View {
         }
     }
 
-    /// Shown only for two or more items. With one item the total is the same
-    /// number the tile already carries, printed twice.
-    ///
-    /// Also requires every item to have a size, so a partial total never reads
-    /// as a complete one.
-    private var totalBytes: Int64? {
+    private var leading: String {
+        if category.detection == .grouping {
+            return "\(groups.count) set\(groups.count == 1 ? "" : "s")"
+        }
+        return "\(records.count) item\(records.count == 1 ? "" : "s")"
+    }
+
+    /// For groups: what deleting the extras would free. For flat lists: the
+    /// total size, and only with two or more items, since with one item the
+    /// total is the same number the tile already carries.
+    private var trailing: String? {
+        if category.detection == .grouping {
+            let copies = groups.reduce(0) { $0 + $1.removableCount }
+            guard copies > 0 else { return nil }
+
+            let reclaim = groups.compactMap(\.reclaimableBytes).reduce(0, +)
+            guard reclaim > 0 else { return "\(copies) can go" }
+
+            let allKnown = groups.allSatisfy { $0.reclaimableBytes != nil }
+            return "\(copies) can go, \(Formatters.bytes(reclaim))\(allKnown ? "" : "+")"
+        }
+
         guard records.count > 1 else { return nil }
         guard category == .largeVideos || category == .videos else { return nil }
 
@@ -365,7 +612,7 @@ private struct SummaryRow: View {
             guard let bytes = record.size.bytes else { return nil }
             sum += bytes
         }
-        return sum
+        return Formatters.bytes(sum)
     }
 }
 
@@ -400,7 +647,7 @@ private struct PreviewRecoveryCard: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("\(count) full preview\(count == 1 ? "" : "s") in iCloud")
                     .font(.subheadline.weight(.medium))
-                Text("Sizes and durations below are accurate either way. Loading previews fetches small images over the network.")
+                Text("Sizes and durations here are accurate either way. Loading previews fetches small images over the network.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Button("Load previews", action: action)

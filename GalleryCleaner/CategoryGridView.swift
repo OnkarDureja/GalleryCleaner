@@ -4,6 +4,11 @@ struct CategoryGridView: View {
 
     @Environment(LibraryStore.self) private var store
 
+    /// Drives the card-to-detail zoom on iOS 18 and later.
+    @Namespace private var cardTransition
+
+    @State private var hasAppeared = false
+
     /// Six fixed cards, so a LazyVGrid buys nothing and actively hurts: its
     /// rows size to their content, which is why cards with no note ended up
     /// shorter than their neighbours and the screen stopped at half height.
@@ -48,6 +53,7 @@ struct CategoryGridView: View {
             }
             .background(Color(.systemGroupedBackground))
         }
+        .onAppear { hasAppeared = true }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 if store.isScanning {
@@ -61,14 +67,45 @@ struct CategoryGridView: View {
 
     private func cardLink(for category: CategoryID) -> some View {
         let state = store.state(for: category)
+        let order = CategoryID.allCases.firstIndex(of: category) ?? 0
 
         return NavigationLink {
             CategoryDetailView(category: category)
+                .zoomDestination(id: category.id, in: cardTransition)
         } label: {
             CategoryCard(category: category, state: state)
         }
         .buttonStyle(CardButtonStyle())
         .disabled(!state.isNavigable)
+        .zoomSource(id: category.id, in: cardTransition)
+        .opacity(hasAppeared ? 1 : 0)
+        .offset(y: hasAppeared ? 0 : 14)
+        .animation(.easeOut(duration: 0.35).delay(Double(order) * 0.04), value: hasAppeared)
+    }
+}
+
+// MARK: - Transition plumbing
+
+/// The zoom transition landed in iOS 18 and the deployment target is 17, so
+/// both halves are behind availability checks. On 17 the push is unchanged.
+private extension View {
+
+    @ViewBuilder
+    func zoomSource(id: String, in namespace: Namespace.ID) -> some View {
+        if #available(iOS 18.0, *) {
+            matchedTransitionSource(id: id, in: namespace)
+        } else {
+            self
+        }
+    }
+
+    @ViewBuilder
+    func zoomDestination(id: String, in namespace: Namespace.ID) -> some View {
+        if #available(iOS 18.0, *) {
+            navigationTransition(.zoom(sourceID: id, in: namespace))
+        } else {
+            self
+        }
     }
 }
 
@@ -76,8 +113,8 @@ struct CategoryGridView: View {
 private struct CardButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? 0.975 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(.easeOut(duration: 0.14), value: configuration.isPressed)
     }
 }
 
@@ -90,14 +127,15 @@ struct CategoryCard: View {
 
     private var isPlaceholder: Bool { state.isPlaceholder }
 
+    private var tint: Color {
+        isPlaceholder ? Color.secondary : category.tint
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
 
             HStack(alignment: .top, spacing: 0) {
-                IconBadge(
-                    symbolName: category.symbolName,
-                    tint: isPlaceholder ? Color.secondary : category.tint
-                )
+                IconBadge(symbolName: category.symbolName, tint: tint)
 
                 Spacer(minLength: 0)
 
@@ -107,42 +145,43 @@ struct CategoryCard: View {
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.tertiary)
-                        .padding(.top, 3)
+                        .padding(.top, 6)
                 }
             }
 
             // Absorbs whatever extra height the row hands this card, so the
             // text block always sits on the baseline rather than floating.
-            Spacer(minLength: 12)
+            Spacer(minLength: 14)
 
             valueRow
-                .frame(height: 34, alignment: .leading)
+                .frame(height: 36, alignment: .leading)
 
             Text(category.title)
-                .font(.subheadline.weight(.medium))
+                .font(.subheadline.weight(.semibold))
                 .foregroundStyle(isPlaceholder ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
                 .lineLimit(1)
-                .padding(.top, 2)
+                .padding(.top, 1)
 
             Text(subtitle)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(2, reservesSpace: true)
                 .multilineTextAlignment(.leading)
-                .padding(.top, 3)
+                .padding(.top, 4)
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, minHeight: 150, maxHeight: .infinity, alignment: .topLeading)
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
+        .padding(16)
+        .frame(maxWidth: .infinity, minHeight: 164, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
             if isPlaceholder {
-                RoundedRectangle(cornerRadius: 16)
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .strokeBorder(Color(.separator), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
             } else {
-                RoundedRectangle(cornerRadius: 16)
-                    .strokeBorder(Color(.separator).opacity(0.5), lineWidth: 0.5)
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(Color(.separator).opacity(0.45), lineWidth: 0.5)
             }
         }
+        .shadow(color: .black.opacity(isPlaceholder ? 0 : 0.05), radius: 8, y: 2)
     }
 
     @ViewBuilder
@@ -152,17 +191,23 @@ struct CategoryCard: View {
             Text("Not built")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 5)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
                 .background(Color(.tertiarySystemFill), in: Capsule())
 
         case .idle:
             Text("–")
-                .font(.system(size: 28, weight: .semibold, design: .rounded))
+                .font(.system(size: 30, weight: .semibold, design: .rounded))
                 .foregroundStyle(.tertiary)
 
-        case .scanning(let partial):
-            countText(partial, dimmed: false)
+        case .scanning(let partial, _):
+            if let partial {
+                countText(partial, dimmed: false)
+            } else {
+                Text("–")
+                    .font(.system(size: 30, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.tertiary)
+            }
 
         case .ready(let count, _):
             countText(count, dimmed: count == 0)
@@ -171,7 +216,7 @@ struct CategoryCard: View {
 
     private func countText(_ value: Int, dimmed: Bool) -> some View {
         Text("\(value)")
-            .font(.system(size: 28, weight: .semibold, design: .rounded))
+            .font(.system(size: 30, weight: .semibold, design: .rounded))
             .monospacedDigit()
             .contentTransition(.numericText())
             .foregroundStyle(dimmed ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.primary))
@@ -183,7 +228,7 @@ struct CategoryCard: View {
     private var subtitle: String {
         switch state {
         case .idle:                    return "Waiting to scan"
-        case .scanning:                return "Counting"
+        case .scanning(_, let detail): return detail
         case .unavailable(let reason): return reason
         case .ready(_, let note):      return note ?? category.blurb
         }
@@ -196,13 +241,17 @@ private struct IconBadge: View {
     let tint: Color
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
             .fill(tint.opacity(0.16))
-            .frame(width: 32, height: 32)
+            .frame(width: 44, height: 44)
             .overlay {
                 Image(systemName: symbolName)
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(tint)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(tint.opacity(0.22), lineWidth: 0.5)
             }
     }
 }
@@ -228,7 +277,7 @@ private struct ScanStatusView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
         case .finished:
-            statusLine("\(store.scannedAssetCount) item\(store.scannedAssetCount == 1 ? "" : "s") scanned")
+            statusLine(finishedLine)
 
         case .cancelled:
             statusLine("Scan stopped at \(store.progress.processed) of \(store.progress.total). Counts are partial.")
@@ -236,6 +285,21 @@ private struct ScanStatusView: View {
         case .blocked:
             statusLine("Photo access changed. Rescan once access is back on.")
         }
+    }
+
+    private var finishedLine: String {
+        let count = store.scannedAssetCount
+        var text = "\(count) item\(count == 1 ? "" : "s") scanned"
+
+        guard AppConfig.showScanTimings else { return text }
+
+        if let index = store.indexDuration {
+            text += String(format: " in %.1fs", index)
+        }
+        if let grouping = store.groupingDuration {
+            text += String(format: ", compared in %.1fs", grouping)
+        }
+        return text
     }
 
     private func statusLine(_ text: String) -> some View {
@@ -253,7 +317,7 @@ private struct LimitedAccessBanner: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "eye.trianglebadge.exclamationmark")
-                .font(.system(size: 15, weight: .semibold))
+                .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(.orange)
                 .padding(.top, 1)
 
@@ -271,10 +335,10 @@ private struct LimitedAccessBanner: View {
             Spacer(minLength: 0)
         }
         .padding(12)
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14))
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(Color(.separator).opacity(0.5), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color(.separator).opacity(0.45), lineWidth: 0.5)
         }
     }
 }
@@ -286,7 +350,7 @@ private struct StaleBanner: View {
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: "arrow.clockwise")
-                .font(.system(size: 14, weight: .semibold))
+                .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(.secondary)
 
             Text("The library changed since this scan.")
@@ -298,10 +362,10 @@ private struct StaleBanner: View {
                 .font(.caption.weight(.semibold))
         }
         .padding(12)
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14))
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(Color(.separator).opacity(0.5), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color(.separator).opacity(0.45), lineWidth: 0.5)
         }
     }
 }
