@@ -45,11 +45,9 @@ None of the scanning or comparison touches the network. The app only fetches fro
 
 All thresholds and tuning values are in `AppConfig.swift`.
 
-## Known limitations
+## Limitations
 
-- **Similar photos has a time limit.** It only compares photos taken within 60 seconds of each other, or in the same burst. A similar photo from another day, or a cropped copy, will be missed.
-- **Thresholds are estimates.** The similarity thresholds for Similar photos and for re-saved copies were set by estimate. They have not been tuned on a large real library.
-- **iCloud-only and shared photos are left out of comparisons.** Photos whose original lives only in iCloud, and photos in shared albums, are skipped by the duplicate and similar checks, because those checks never use the network. They still show up in Screenshots and Videos.
-- **Synced items can't be deleted.** Items synced to the phone from a computer through Finder are shown with a lock. iOS doesn't let any app delete them. To remove them, sync again from the computer without them.
-- **Some re-saved copies get missed.** If a photo has exact copies, those copies claim it first. A re-saved copy of the same photo can then be missed.
-- **Not tested on optimised storage.** I haven't been able to test a library that uses iCloud's Optimize iPhone Storage setting. Expect the comparison categories to find less there.
+- **Similar photos only compares photos taken close together.** It looks at photos within 60 seconds of each other, or in the same burst. A similar photo from another day, or a cropped copy, will be missed.
+- **iCloud-only and shared photos are left out of the duplicate and similar checks.** The app never uses the network while scanning, so photos whose original isn't on the phone are skipped. They still show up in Screenshots and Videos.
+- **Items synced from a computer can't be deleted.** They are shown with a lock, because iOS doesn't let any app delete them.
+- **Thresholds were set by hand.** The similarity thresholds were not tuned on a large real library, and I haven't tested a library that uses Optimize iPhone Storage.
