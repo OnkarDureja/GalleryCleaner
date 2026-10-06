@@ -275,18 +275,7 @@ struct CategoryCard: View {
 
     private var textBlock: some View {
         VStack(alignment: .leading, spacing: 2) {
-            HStack(alignment: .firstTextBaseline, spacing: 5) {
-                Text(countText)
-                    .font(.system(size: 28, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                    .contentTransition(.numericText())
-                if let qualifier {
-                    Text(qualifier)
-                        .font(.footnote.weight(.semibold))
-                        .opacity(0.85)
-                        .lineLimit(1)
-                }
-            }
+            countRow
 
             Text(category.title)
                 .font(.subheadline.weight(.semibold))
@@ -304,6 +293,61 @@ struct CategoryCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 16)
         .padding(.bottom, 14)
+    }
+
+    /// Number and qualifier on one line, and the number is one unbreakable
+    /// unit at every size.
+    ///
+    /// Before, the number had no line limit, so once "extra copies" took its
+    /// share of the row a four-digit count wrapped its last digit onto a
+    /// second line. ViewThatFits now tries, in order: everything at full size;
+    /// the qualifier shrunk a little; then both allowed to shrink, the number
+    /// last. Nothing in any option can wrap, so the row is always one line
+    /// and the card keeps its height.
+    @ViewBuilder
+    private var countRow: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                numberText
+                if let qualifier { qualifierText(qualifier).fixedSize() }
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                numberText
+                if let qualifier {
+                    qualifierText(qualifier, font: .caption.weight(.semibold))
+                        .fixedSize()
+                }
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(countText)
+                    .font(.system(size: 28, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .contentTransition(.numericText())
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
+                    .layoutPriority(1)
+                if let qualifier {
+                    qualifierText(qualifier, font: .caption.weight(.semibold))
+                        .minimumScaleFactor(0.7)
+                }
+            }
+        }
+    }
+
+    private var numberText: some View {
+        Text(countText)
+            .font(.system(size: 28, weight: .semibold, design: .rounded))
+            .monospacedDigit()
+            .contentTransition(.numericText())
+            .lineLimit(1)
+            .fixedSize()
+    }
+
+    private func qualifierText(_ text: String, font: Font = .footnote.weight(.semibold)) -> some View {
+        Text(text)
+            .font(font)
+            .opacity(0.85)
+            .lineLimit(1)
     }
 
     // MARK: Copy
