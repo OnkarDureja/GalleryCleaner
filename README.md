@@ -45,7 +45,7 @@ None of the scanning or comparison touches the network. The app only fetches fro
 
 All thresholds and tuning values are in `AppConfig.swift`.
 
-## Limitations
+## Known Limitations
 
 - **Similar photos only compares photos taken close together.** It looks at photos within 60 seconds of each other, or in the same burst. A similar photo from another day, or a cropped copy, will be missed.
 - **iCloud-only and shared photos are left out of the duplicate and similar checks.** The app never uses the network while scanning, so photos whose original isn't on the phone are skipped. They still show up in Screenshots and Videos.
