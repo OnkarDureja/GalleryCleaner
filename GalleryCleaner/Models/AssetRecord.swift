@@ -8,7 +8,7 @@
 import Foundation
 import Photos
 
-enum MediaKind: String, Sendable {
+nonisolated enum MediaKind: String, Sendable {
     case photo
     case video
     case audio
@@ -26,13 +26,13 @@ enum MediaKind: String, Sendable {
 
 /// Where a byte count came from. The UI shows this, because an estimate the user
 /// thinks is exact is worse than no number at all.
-enum ByteSizeSource: String, Sendable {
+nonisolated enum ByteSizeSource: String, Sendable {
     case measured   // read off PHAssetResource
     case estimated  // derived from duration and resolution
     case unknown    // no size available at all
 }
 
-struct ByteSize: Hashable, Sendable {
+nonisolated struct ByteSize: Hashable, Sendable {
     let bytes: Int64?
     let source: ByteSizeSource
 
@@ -50,7 +50,10 @@ struct ByteSize: Hashable, Sendable {
 /// `mediaSubtypeRawValue` is stored instead of `PHAssetMediaSubtype` so the whole
 /// record is trivially `Sendable` and can cross from the background index task to
 /// the main actor without ceremony.
-struct AssetRecord: Identifiable, Hashable, Sendable {
+///
+/// `nonisolated` so the background index and detectors can build and read
+/// records without borrowing main-actor isolation from the project default.
+nonisolated struct AssetRecord: Identifiable, Hashable, Sendable {
 
     let id: String                  // localIdentifier
     let kind: MediaKind
@@ -62,6 +65,18 @@ struct AssetRecord: Identifiable, Hashable, Sendable {
     let modificationDate: Date?
     let burstIdentifier: String?
     let isFromSharedAlbum: Bool
+
+    /// Came onto the phone through a Finder (or iTunes) sync. iOS only removes
+    /// these when the computer syncs again without them, so the app shows them
+    /// but never offers to delete them.
+    let isSynced: Bool
+
+    /// Whether this app is allowed to remove the asset. False for shared-album
+    /// assets and for anything synced from a computer, even where PhotoKit's
+    /// own `canPerform(.delete)` says yes: for synced items that answer was
+    /// wrong, and the deletion went nowhere. Detectors still group these so
+    /// the user sees them; selection and bulk actions skip them.
+    let canDelete: Bool
     let originalFilename: String?
     let size: ByteSize
 

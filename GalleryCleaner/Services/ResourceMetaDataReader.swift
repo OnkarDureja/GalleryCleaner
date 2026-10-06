@@ -8,7 +8,7 @@
 import Foundation
 import Photos
 
-struct ResourceSummary {
+nonisolated struct ResourceSummary {
     let size: ByteSize
     let originalFilename: String?
     let resourceCount: Int
@@ -17,7 +17,7 @@ struct ResourceSummary {
 }
 
 /// Caches the one-time answer to "does this OS expose PHAssetResource.fileSize".
-private final class FileSizeSupportCache: @unchecked Sendable {
+nonisolated private final class FileSizeSupportCache: @unchecked Sendable {
     private let lock = NSLock()
     private var resolved: Bool?
 
@@ -37,7 +37,10 @@ private final class FileSizeSupportCache: @unchecked Sendable {
     }
 }
 
-enum ResourceMetadataReader {
+/// `nonisolated` so the index pass reads resources on its own background
+/// thread. Under the project's main-actor default this was the call PhotoKit
+/// was warning about: resource metadata fetched on demand on the main queue.
+nonisolated enum ResourceMetadataReader {
 
     private static let fileSizeKey = "fileSize"
     private static let supportCache = FileSizeSupportCache()
@@ -119,7 +122,7 @@ enum ResourceMetadataReader {
 /// Large Videos card still has something defensible to show if the undocumented
 /// size key disappears. Everything it produces is tagged `.estimated` and the UI
 /// prefixes it with a tilde.
-enum SizeEstimator {
+nonisolated enum SizeEstimator {
 
     static func videoBytes(duration: TimeInterval, width: Int, height: Int) -> ByteSize {
         guard duration > 0, width > 0, height > 0 else { return .unknown }

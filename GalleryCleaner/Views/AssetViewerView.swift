@@ -8,6 +8,7 @@
 import SwiftUI
 import Photos
 import AVKit
+import AVFoundation
 
 /// What the detail screens hand to the viewer.
 struct ViewerTarget: Identifiable, Equatable {
@@ -52,7 +53,12 @@ struct AssetViewerView: View {
             .background(Color.black.ignoresSafeArea())
             .overlay(alignment: .top) { topBar }
             .task(id: allowNetwork) { await load() }
-            .onDisappear { player?.pause() }
+            .onDisappear {
+                player?.pause()
+                // Hand the session back so other audio can resume.
+                try? AVAudioSession.sharedInstance()
+                    .setActive(false, options: .notifyOthersOnDeactivation)
+            }
     }
 
     private var topBar: some View {
@@ -102,7 +108,10 @@ struct AssetViewerView: View {
         case .video:
             if let player {
                 VideoPlayer(player: player)
-                    .onAppear { player.play() }
+                    .onAppear {
+                        activatePlaybackAudio()
+                        player.play()
+                    }
             }
 
         case .needsNetwork:
@@ -204,6 +213,16 @@ struct AssetViewerView: View {
             }
         }
         .padding(32)
+    }
+
+    /// Without this the app runs on the default ambient audio category, which
+    /// obeys the ringer switch. A video with perfectly good audio then plays
+    /// in total silence whenever the phone is on silent, and nothing on screen
+    /// explains why.
+    private func activatePlaybackAudio() {
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, mode: .moviePlayback)
+        try? session.setActive(true)
     }
 
     private var caption: String {

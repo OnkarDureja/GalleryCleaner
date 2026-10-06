@@ -8,14 +8,14 @@
 import Foundation
 import Photos
 
-struct IndexProgress: Sendable, Equatable {
+nonisolated struct IndexProgress: Sendable, Equatable {
     let processed: Int
     let total: Int
 
     static let zero = IndexProgress(processed: 0, total: 0)
 }
 
-enum IndexEvent: Sendable {
+nonisolated enum IndexEvent: Sendable {
     case started(total: Int)
     case batch([AssetRecord], IndexProgress)
     case finished(IndexProgress)
@@ -33,7 +33,46 @@ enum IndexEvent: Sendable {
 ///    up until the pass ends.
 /// 3. Work happens on a detached utility task and reaches the UI as batches, so
 ///    the main actor only wakes up about 25 times for a 5000-asset library.
-struct LibraryIndexer: Sendable {
+///
+/// Marked `nonisolated` because the project defaults every type to the main
+/// actor. Without it, anything this type calls with `await` can quietly hop
+/// back onto main, which is exactly how a "background" scan ends up blocking
+/// taps. Nothing in here touches UI state, so main-actor isolation was never
+/// correct for it.
+nonisolated struct LibraryIndexer: Sendable {
+
+    /// One definition of "the assets this app cares about", used by both the
+    /// index pass and the cheap count check that decides whether anything
+    /// actually changed.
+    static func makeFetchOptions() -> PHFetchOptions {
+        let options = PHFetchOptions()
+
+        // Without this a fetch returns the user library only. Anything synced
+        // from a computer through Finder is `typeiTunesSynced` and is silently
+        // absent, which is why a library showing 1200 items in Photos indexed
+        // as 112 here.
+        //
+        // Shared-album assets stay out: they live in someone else's library,
+        // take no space on this device, and cannot be deleted, so counting
+        // them as clutter would be wrong.
+        options.includeAssetSourceTypes = [.typeUserLibrary, .typeiTunesSynced]
+
+        options.includeHiddenAssets = false
+        // Only burst representatives, matching what Photos shows the user.
+        // Similar-photo detection will probably want `true` here, since bursts
+        // are the richest source of near-identical shots.
+        options.includeAllBurstAssets = false
+        options.sortDescriptors = [
+            NSSortDescriptor(key: "creationDate", ascending: false)
+        ]
+        return options
+    }
+
+    /// A database count, no asset objects built. Cheap enough to run on every
+    /// library change notification.
+    static func currentAssetCount() -> Int {
+        PHAsset.fetchAssets(with: makeFetchOptions()).count
+    }
 
     func makeStream(
         policy: ResourcePolicy = AppConfig.resourcePolicy,
@@ -43,17 +82,7 @@ struct LibraryIndexer: Sendable {
         AsyncStream { continuation in
             let task = Task.detached(priority: .utility) {
 
-                let options = PHFetchOptions()
-                options.includeHiddenAssets = false
-                // Only burst representatives, matching what Photos shows the
-                // user. Similar-photo detection will probably want `true` here,
-                // since bursts are the richest source of near-identical shots.
-                options.includeAllBurstAssets = false
-                options.sortDescriptors = [
-                    NSSortDescriptor(key: "creationDate", ascending: false)
-                ]
-
-                let result = PHAsset.fetchAssets(with: options)
+                let result = PHAsset.fetchAssets(with: Self.makeFetchOptions())
                 let total = result.count
 
                 continuation.yield(.started(total: total))
@@ -130,6 +159,10 @@ struct LibraryIndexer: Sendable {
             )
         }
 
+        let sourceType = asset.sourceType
+        let isSynced = sourceType.contains(.typeiTunesSynced)
+        let isShared = sourceType.contains(.typeCloudShared)
+
         return AssetRecord(
             id: asset.localIdentifier,
             kind: kind,
@@ -140,7 +173,11 @@ struct LibraryIndexer: Sendable {
             creationDate: asset.creationDate,
             modificationDate: asset.modificationDate,
             burstIdentifier: asset.burstIdentifier,
-            isFromSharedAlbum: asset.sourceType.contains(.typeCloudShared),
+            isFromSharedAlbum: isShared,
+            isSynced: isSynced,
+            // `canPerform(.delete)` alone said yes for Finder-synced items, and
+            // the deletion then went nowhere. The source type is the real answer.
+            canDelete: !isSynced && !isShared && asset.canPerform(.delete),
             originalFilename: summary.originalFilename,
             size: size
         )

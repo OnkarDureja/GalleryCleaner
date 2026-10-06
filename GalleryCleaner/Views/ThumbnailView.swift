@@ -227,6 +227,10 @@ struct ThumbnailView: View {
             }
             .clipped()
             .clipShape(RoundedRectangle(cornerRadius: aspect == .square ? 6 : 12))
+            // States the hit region outright. `clipped` and `clipShape` each
+            // affect drawing and interaction in their own way, so without this
+            // the tappable area is not guaranteed to match the drawn square.
+            .contentShape(Rectangle())
             .overlay(alignment: .topTrailing) {
                 if let marker = outcome.marker {
                     Image(systemName: marker)

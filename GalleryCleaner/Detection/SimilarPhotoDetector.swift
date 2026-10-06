@@ -7,6 +7,7 @@
 import Foundation
 import Photos
 import Vision
+import ImageIO
 import UIKit
 
 /// Finds near-identical photos: the five shots of the same thing, the one you
@@ -29,9 +30,17 @@ import UIKit
 /// 3. Transitive clustering inside a run. If A matches B and B matches C they
 ///    end up in one set even when A and C are a little further apart, because
 ///    that is what a burst looks like to the person who took it.
-struct SimilarPhotoDetector: GroupingDetector {
+///
+/// `nonisolated`, along with every helper in this file. Under the project's
+/// main-actor default, `FeaturePrintMaker.make` was an async main-actor
+/// function, so the Vision request in it ran synchronously on main for every
+/// candidate. That is the stall during the "Comparing" phase.
+nonisolated struct SimilarPhotoDetector: GroupingDetector {
 
     let category = CategoryID.similarPhotos
+
+    /// Pixel-identical sets found here are moved to Duplicate photos.
+    let reportsInto: [CategoryID] = [.similarPhotos, .duplicatePhotos]
 
     /// Leaves its members available. Nothing runs after this one today, and
     /// "similar" is a weaker claim than "identical".
@@ -97,6 +106,8 @@ struct SimilarPhotoDetector: GroupingDetector {
         let photos = context.index
             .filter {
                 $0.kind == .photo
+                // Synced photos stay in, so the user sees their sets even
+                // though iOS won't let this app remove those items.
                 && !$0.isFromSharedAlbum
                 && !context.claimedIDs.contains($0.id)
             }
@@ -210,13 +221,22 @@ struct SimilarPhotoDetector: GroupingDetector {
                 // picture stored more than once. Duplicate Photos misses these
                 // because it compares file bytes: a re-encoded or re-saved copy
                 // has different bytes and identical pixels.
-                let isSamePicture = (widest ?? 0) <= AppConfig.Similarity.identicalDistance
+                //
+                // Never for screenshots. Two screenshots of the same screen a
+                // few seconds apart score as identical while differing in the
+                // one line of text that mattered, which is exactly how two
+                // captures of this app's own Similar photos screen ended up
+                // labelled as one image saved twice. They stay here, as
+                // similar shots, where nothing is presented as a copy.
+                let hasScreenshot = members.contains { $0.isScreenshot }
+                let isSamePicture = !hasScreenshot
+                    && (widest ?? 0) <= AppConfig.Similarity.identicalDistance
 
                 groups.append(
                     AssetGroup(
                         id: (isSamePicture ? "px-" : "sim-") + ordered[0].id,
                         members: ordered,
-                        reclaimableBytes: reclaimable(from: ordered),
+                        reclaimableBytes: GroupMath.reclaimableBytes(keepingFirstOf: ordered),
                         note: isSamePicture
                             ? "Identical image saved as a different file"
                             : note(widestDistance: widest),
@@ -242,15 +262,6 @@ struct SimilarPhotoDetector: GroupingDetector {
         )
     }
 
-    private static func reclaimable(from ordered: [AssetRecord]) -> Int64? {
-        var total: Int64 = 0
-        for record in ordered.dropFirst() {
-            guard let bytes = record.size.bytes else { return nil }
-            total += bytes
-        }
-        return total
-    }
-
     // MARK: - Helpers
 
     private static func fetchAssets(ids: [String]) -> [String: PHAsset] {
@@ -268,7 +279,8 @@ struct SimilarPhotoDetector: GroupingDetector {
 
 // MARK: - Clustering
 
-private struct UnionFind {
+/// Shared with `VisualCopyDetector`.
+nonisolated struct UnionFind {
     private var parent: [Int]
 
     init(count: Int) {
@@ -297,10 +309,14 @@ private struct UnionFind {
 
 // MARK: - Feature prints
 
-private enum FeaturePrintMaker {
+/// Shared with `VisualCopyDetector`.
+nonisolated enum FeaturePrintMaker {
 
     static func make(for asset: PHAsset) async -> VNFeaturePrintObservation? {
-        guard let image = await thumbnail(for: asset), let cgImage = image.cgImage else {
+        guard
+            let image = await Self.image(for: asset, side: AppConfig.Similarity.featurePrintPixels, fast: false),
+            let cgImage = image.cgImage
+        else {
             return nil
         }
 
@@ -309,7 +325,16 @@ private enum FeaturePrintMaker {
         // rather than how two photos happened to be letterboxed.
         request.imageCropAndScaleOption = .scaleFill
 
-        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        // The orientation is passed through. Without it Vision reads the raw
+        // pixel buffer, and a photo stored sideways with a rotation flag looks
+        // nothing like a re-saved copy whose pixels were rotated for real.
+        // Within one burst every shot is stored the same way, which is why
+        // this never showed up in Similar photos; across re-saves it would.
+        let handler = VNImageRequestHandler(
+            cgImage: cgImage,
+            orientation: CGImagePropertyOrientation(image.imageOrientation),
+            options: [:]
+        )
 
         do {
             try handler.perform([request])
@@ -324,14 +349,16 @@ private enum FeaturePrintMaker {
     /// PHPhotosErrorDomain 3303 when Photos has no derivative cached. Network
     /// stays off: an asset whose data is not on the device is skipped instead
     /// of downloaded behind the user's back.
-    private static func thumbnail(for asset: PHAsset) async -> UIImage? {
+    ///
+    /// `fast` lets Photos hand back a cached thumbnail at roughly the asked
+    /// size instead of resampling to it exactly, which is what makes reducing
+    /// a whole library to tiny signatures affordable.
+    static func image(for asset: PHAsset, side: CGFloat, fast: Bool) async -> UIImage? {
         let options = PHImageRequestOptions()
         options.deliveryMode = .highQualityFormat
-        options.resizeMode = .exact
+        options.resizeMode = fast ? .fast : .exact
         options.isSynchronous = false
         options.isNetworkAccessAllowed = false
-
-        let side = AppConfig.Similarity.featurePrintPixels
 
         return await withCheckedContinuation { continuation in
             let guardBox = ResumeOnce()
@@ -348,7 +375,11 @@ private enum FeaturePrintMaker {
     }
 }
 
-private final class ResumeOnce: @unchecked Sendable {
+/// Kept `private` to this file. `AssetViewerView` has its own private class of
+/// the same name, and making this one internal turned the two into a
+/// redeclaration. `FeaturePrintMaker` only uses it inside its own body, so it
+/// never needed to be visible outside this file.
+nonisolated private final class ResumeOnce: @unchecked Sendable {
     private let lock = NSLock()
     private var used = false
 
@@ -358,5 +389,22 @@ private final class ResumeOnce: @unchecked Sendable {
         if used { return false }
         used = true
         return true
+    }
+}
+
+/// Vision takes ImageIO's orientation type, PhotoKit hands back UIKit's.
+nonisolated extension CGImagePropertyOrientation {
+    init(_ orientation: UIImage.Orientation) {
+        switch orientation {
+        case .up:            self = .up
+        case .down:          self = .down
+        case .left:          self = .left
+        case .right:         self = .right
+        case .upMirrored:    self = .upMirrored
+        case .downMirrored:  self = .downMirrored
+        case .leftMirrored:  self = .leftMirrored
+        case .rightMirrored: self = .rightMirrored
+        @unknown default:    self = .up
+        }
     }
 }

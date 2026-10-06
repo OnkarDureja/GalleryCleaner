@@ -17,20 +17,15 @@ struct RootView: View {
             content
                 .navigationTitle("Gallery Cleaner")
         }
-        .task {
-            store.refreshPermission()
-            if store.permission.allowsFetch, store.phase == .idle {
-                store.startScan()
-            }
-        }
+        // One idempotent entry point, used on first appearance and on every
+        // return to the foreground. The previous version only started a scan
+        // when the permission value had just changed, which meant an already
+        // authorised launch could sit there doing nothing until Rescan was
+        // pressed by hand.
+        .task { await store.bootstrap() }
         .onChange(of: scenePhase) { _, phase in
-            // Covers the user leaving for Settings, flipping access, coming back.
             guard phase == .active else { return }
-            let before = store.permission
-            store.refreshPermission()
-            if before != store.permission, store.permission.allowsFetch {
-                store.startScan()
-            }
+            Task { await store.bootstrap() }
         }
     }
 
