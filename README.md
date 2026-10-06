@@ -32,11 +32,7 @@ Each step does the cheap filtering first, so the expensive work only runs on a s
 
 File hashes are cached on disk, keyed by asset, modification date and size. A rescan only hashes files that are new or have changed, which is why rescans are faster than the first scan.
 
-None of the scanning or comparison touches the network. The only time the app fetches anything over the network is when you tap the button to load an iCloud preview.
-
-## Performance
-
-On a test library of about 5,000 items on an iPhone 15, the first full scan took about 65 seconds and a rescan about 34 seconds. The home screen stays usable during the scan, and each category can be opened as soon as its results are ready.
+None of the scanning or comparison touches the network. The app only fetches from iCloud when you ask it to, either with the Load previews button on a category screen or by opening an item in the viewer.
 
 ## Project layout
 
