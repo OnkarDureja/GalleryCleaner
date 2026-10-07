@@ -5,7 +5,7 @@ import Photos
 import PhotosUI
 import UIKit
 
-enum PhotoPermissionStatus: Equatable {
+nonisolated enum PhotoPermissionStatus: Equatable, Sendable {
     case notDetermined
     case denied
     case restricted
@@ -33,7 +33,9 @@ enum PhotoPermissionStatus: Equatable {
 
 enum PhotoLibraryPermission {
 
-    static func current() -> PhotoPermissionStatus {
+    /// Nonisolated: it only reads PhotoKit's authorization status, which is
+    /// thread-safe, and the change watcher calls it off the main actor.
+    nonisolated static func current() -> PhotoPermissionStatus {
         PhotoPermissionStatus(PHPhotoLibrary.authorizationStatus(for: .readWrite))
     }
 

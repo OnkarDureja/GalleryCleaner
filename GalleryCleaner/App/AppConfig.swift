@@ -15,12 +15,16 @@ import CoreGraphics
 /// add up to seconds. Phase 1 only needs byte sizes for videos, so it asks for
 /// videos only. Duplicate Photos detection needs sizes for photos too; when that
 /// lands, switch this to `.all` and nothing else about the pass changes.
-enum ResourcePolicy {
+nonisolated enum ResourcePolicy: Sendable {
     case videosOnly
     case all
 }
 
-enum AppConfig {
+/// Every value in here is an immutable constant, read by the detectors and
+/// the indexer on background tasks. `nonisolated` opts these types out of the
+/// project's default MainActor isolation, so those reads are plain loads with
+/// no actor hop. Safe because nothing here can change after launch.
+nonisolated enum AppConfig {
 
     /// `.all` since Duplicate Photos needs byte sizes for photos too.
     static let resourcePolicy: ResourcePolicy = .all
@@ -69,7 +73,7 @@ enum AppConfig {
     /// date apart. Separate from `Similarity` on purpose: that one groups
     /// different shots of a moment, this one claims two files are one image,
     /// which is a much stronger statement and needs much stricter numbers.
-    enum VisualCopy {
+    nonisolated enum VisualCopy {
 
         /// Edge of the tiny upright image every photo is reduced to for the
         /// cheap first pass.
@@ -108,7 +112,7 @@ enum AppConfig {
     /// within a minute of each other *and* score close before they could be
     /// wrongly grouped. That makes the exact number far less load-bearing than
     /// it looks, which matters when there is no chance to tune it on a device.
-    enum Similarity {
+    nonisolated enum Similarity {
 
         /// Vision feature-print distance at or below which two photos are
         /// called similar. 0 means identical feature prints; unrelated images
